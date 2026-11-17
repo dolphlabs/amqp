@@ -1,6 +1,6 @@
 # amqp — RabbitMQ (AMQP 0-9-1) client for slang
 
-**Status:** PRD. No code yet.
+**Status:** PRD approved; milestone 1 (wire) in progress.
 **Repository:** `github.com/dolphlabs/amqp`
 **Import name:** `amqp`
 **Package path:** `src/amqp/`
@@ -188,11 +188,11 @@ amqp.ack(ch, d.delivery_tag, false);
 - A clean consumer install from a Git tag pin before the first release
   tag.
 
-## Decisions needed before implementation
+## Decisions recorded before implementation (2026-11-17)
 
-1. **Delivery API:** a pull call (`amqp.next(sub, deadline)`, as `nats`
-   does) rather than exposing the slang channel. Recommended, because it
-   keeps the buffering policy inside the package.
-2. **Reconnection** stays out of v1 (above). Confirm.
-3. **Minimum broker:** RabbitMQ 3.13 (the oldest still supported
-   upstream). Confirm.
+1. **Delivery API:** consumers pull with `amqp.next(sub, deadline)`, as
+   `nats` does; the slang channel behind it stays inside the package, and
+   so does its buffering policy.
+2. **Reconnection** is out of v1: a dropped connection fails its channels
+   and consumers with an error, and the application reconnects.
+3. **Minimum broker:** RabbitMQ 3.13.
