@@ -1,0 +1,50 @@
+-- handshake and graceful close
+client: frame_max=65536 channel_max=2047 heartbeat=30 server=fake broker
+client: closed=true why=amqp: the connection was closed
+server: start-ok PLAIN app:s3cr@t product=slang amqp
+server: tune-ok channel_max=2047 frame_max=65536 heartbeat=30
+server: open vhost=/prod
+server: client sent 10.50 200
+-- login refused
+client: amqp: 403 ACCESS_REFUSED - Login was refused using authentication mechanism PLAIN.
+-- login dropped
+client: amqp: the broker closed the connection during login (wrong user or password?)
+-- vhost refused
+client: amqp: 530 NOT_ALLOWED - vhost nope not found
+-- another protocol
+client: amqp: the broker does not speak AMQP 0-9-1 (it answered with its own protocol header)
+-- no PLAIN
+client: amqp: the broker does not offer PLAIN authentication (it offers AMQPLAIN)
+-- broker closes
+client: closed=true why=amqp: 320 CONNECTION_FORCED - broker forced connection closure with reason 'shutdown'
+server: start-ok PLAIN app:s3cr@t product=slang amqp
+server: tune-ok channel_max=2047 frame_max=131072 heartbeat=60
+server: open vhost=/
+server: client answered 10.51
+-- malformed frame
+client: closed=true why=amqp: a frame without its end octet (0xCE)
+server: start-ok PLAIN app:s3cr@t product=slang amqp
+server: tune-ok channel_max=2047 frame_max=131072 heartbeat=60
+server: open vhost=/
+server: client sent 10.50 501
+-- frame over frame-max
+client: closed=true why=amqp: a frame of 5008 bytes, over the negotiated frame-max of 4096
+server: start-ok PLAIN app:s3cr@t product=slang amqp
+server: tune-ok channel_max=2047 frame_max=4096 heartbeat=60
+server: open vhost=/
+server: client sent 10.50 501
+-- frame on an unopened channel
+client: closed=true why=amqp: a frame for channel 5, which is not open
+server: start-ok PLAIN app:s3cr@t product=slang amqp
+server: tune-ok channel_max=2047 frame_max=131072 heartbeat=60
+server: open vhost=/
+server: client sent 10.50 504
+-- heartbeats
+client: closed=true why=amqp: no heartbeat from the broker for 2 s
+server: start-ok PLAIN app:s3cr@t product=slang amqp
+server: tune-ok channel_max=2047 frame_max=131072 heartbeat=1
+server: open vhost=/
+server: got frame type 8 from an idle client
+-- blocked
+client: blocked=true reason=low on memory
+client: blocked=false
