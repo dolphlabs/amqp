@@ -4,11 +4,10 @@ A RabbitMQ (AMQP 0-9-1) client for slang: work queues, pub/sub and RPC
 over the stdlib `net` package, with deadlines, verified TLS and bounded
 memory. The plan is [AMQP_PRD.md](AMQP_PRD.md).
 
-**Status:** milestone 5 of 7: the wire layer, the connection, channels
-with topology, publishing with confirms and returns, and consuming:
-deliveries pulled with `next`, ack/nack/reject, cancel from either side,
-and `get`. A live suite against RabbitMQ and a benchmark against Go's
-`amqp091-go` come next.
+**Status:** milestone 6 of 7: a complete client -- connection, channels
+and topology, publishing with confirms and returns, consuming -- checked
+against RabbitMQ 4.1 and Go's amqp091-go. A benchmark against
+amqp091-go comes next.
 
 ```slang
 import "amqp";
@@ -61,3 +60,14 @@ the package must decode, render and encode back byte for byte, or refuse.
 `tests/wire/gen.py` writes them with Python's `struct` to the 0-9-1 spec
 and RabbitMQ's table types, and checks that writer against pika 1.3.2
 wherever pika reads the types correctly.
+
+    make live SLANGC=/path/to/slangc
+
+runs `tests/live` against RabbitMQ 4.1.8 in Docker (needs docker, openssl
+and go): connect; 1000 persistent messages confirmed and consumed in
+order; topic routing; RPC with a broker-named reply queue; a mandatory
+return; a nack from a full `reject-publish` queue; 404 and 406 closing
+only their channel; every field-table type through the broker unchanged;
+a 5 MB body; a queue deleted under its consumer; a connection closed by
+the broker; TLS verified against a throwaway CA and refused without it;
+and messages both ways with Go's amqp091-go (`tests/live/peer`).
