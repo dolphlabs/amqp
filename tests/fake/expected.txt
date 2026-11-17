@@ -48,3 +48,56 @@ server: got frame type 8 from an idle client
 -- blocked
 client: blocked=true reason=low on memory
 client: blocked=false
+-- channels and topology
+client: exchange_declare: ok
+client: exchange_bind: ok
+client: exchange_unbind: ok
+client: queue jobs messages=3 consumers=1
+client: the broker named the queue amq.gen-x1
+client: queue_bind: ok
+client: queue_unbind: ok
+client: purged 7
+client: deleted with 2 messages
+client: qos: ok
+client: qos 99 (the broker pauses the channel first): ok
+client: channel active=false
+client: exchange_delete: ok
+client: passive declare: amqp: 404 NOT_FOUND - no queue 'missing' in vhost '/'
+client: channel closed=true why=amqp: 404 NOT_FOUND - no queue 'missing' in vhost '/'
+client: a call on the closed channel: amqp: 404 NOT_FOUND - no queue 'missing' in vhost '/'
+client: connection closed=false
+client: another channel, number 2
+client: declare locked: amqp: 406 PRECONDITION_FAILED - inequivalent arg 'durable' for queue 'locked' in vhost '/'
+client: amqp: timed out waiting for the broker's reply to 50.10 (after about 300 ms)
+client: timed-out channel closed=true
+client: close_channel: ok
+client: close_channel again: ok
+client: after close, a new channel: amqp: the connection was closed
+server: start-ok PLAIN app:s3cr@t product=slang amqp
+server: tune-ok channel_max=2047 frame_max=131072 heartbeat=60
+server: open vhost=/
+server: ch1 channel.open
+server: ch1 exchange.declare events topic passive=0 durable=1 auto_delete=0 internal=0
+server: ch1 exchange.bind audit <- events key=#
+server: ch1 exchange.unbind audit <- events key=#
+server: ch1 queue.declare jobs passive=0 durable=1 exclusive=0 auto_delete=0 x-queue-type=quorum
+server: ch1 queue.declare  passive=0 durable=0 exclusive=1 auto_delete=1 x-queue-type=
+server: ch1 queue.bind jobs <- events key=order.*
+server: ch1 queue.unbind jobs <- events key=order.*
+server: ch1 queue.purge jobs
+server: ch1 queue.delete jobs if_unused=1 if_empty=0
+server: ch1 basic.qos prefetch=32
+server: ch1 basic.qos prefetch=99
+server: ch1 channel.flow-ok 0
+server: ch1 exchange.delete events if_unused=0
+server: ch1 queue.declare missing passive=1 durable=0 exclusive=0 auto_delete=0 x-queue-type=
+server: ch1 channel.close-ok
+server: ch2 channel.open
+server: ch2 queue.declare locked passive=0 durable=0 exclusive=0 auto_delete=0 x-queue-type=
+server: ch2 channel.close-ok
+server: ch3 channel.open
+server: ch3 queue.declare slow passive=0 durable=0 exclusive=0 auto_delete=0 x-queue-type=
+server: ch3 channel.close 200
+server: ch4 channel.open
+server: ch4 channel.close 200
+server: connection 10.50

@@ -331,3 +331,183 @@ println("client: blocked=" + to_str(amqp.is_blocked(bc)) + " reason=" + amqp.blo
 time.sleep(300000000);
 println("client: blocked=" + to_str(amqp.is_blocked(bc)));
 amqp.close(bc, soon(1));
+
+// ---- channels and topology (milestone 3) ---------------------------------
+
+fn describe(m: amqp.Method) -> str {
+    let k = m.class_id * 1000 + m.method_id;
+    if k == 20010 { return "channel.open"; }
+    if k == 20040 { return "channel.close " + to_str(m.args[0].i); }
+    if k == 20041 { return "channel.close-ok"; }
+    if k == 20021 { return "channel.flow-ok " + to_str(m.args[0].i); }
+    if k == 40010 {
+        return "exchange.declare " + m.args[1].s + " " + m.args[2].s + " passive=" + to_str(m.args[3].i) +
+               " durable=" + to_str(m.args[4].i) + " auto_delete=" + to_str(m.args[5].i) + " internal=" +
+               to_str(m.args[6].i);
+    }
+    if k == 40020 { return "exchange.delete " + m.args[1].s + " if_unused=" + to_str(m.args[2].i); }
+    if k == 40030 { return "exchange.bind " + m.args[1].s + " <- " + m.args[2].s + " key=" + m.args[3].s; }
+    if k == 40040 { return "exchange.unbind " + m.args[1].s + " <- " + m.args[2].s + " key=" + m.args[3].s; }
+    if k == 50010 {
+        let t = m.args[7].t ?? amqp.table();
+        let qt = amqp.as_str(amqp.table_get(t, "x-queue-type") ?? amqp.void_value()) ?? "";
+        return "queue.declare " + m.args[1].s + " passive=" + to_str(m.args[2].i) + " durable=" + to_str(m.args[3].i) +
+               " exclusive=" + to_str(m.args[4].i) + " auto_delete=" + to_str(m.args[5].i) + " x-queue-type=" + qt;
+    }
+    if k == 50020 { return "queue.bind " + m.args[1].s + " <- " + m.args[2].s + " key=" + m.args[3].s; }
+    if k == 50050 { return "queue.unbind " + m.args[1].s + " <- " + m.args[2].s + " key=" + m.args[3].s; }
+    if k == 50030 { return "queue.purge " + m.args[1].s; }
+    if k == 50040 { return "queue.delete " + m.args[1].s + " if_unused=" + to_str(m.args[2].i) + " if_empty=" +
+                           to_str(m.args[3].i); }
+    if k == 60010 { return "basic.qos prefetch=" + to_str(m.args[1].i); }
+    return to_str(m.class_id) + "." + to_str(m.method_id);
+}
+
+// A broker that answers what the topology calls send. Queue "missing" is
+// a 404 to a passive declare, "locked" a 406, "slow" is never answered;
+// a qos of 99 makes it pause the channel (channel.flow) first.
+fn srv_broker(s: Srv) {
+    if !welcome(s, 0, 131072, 0) {
+        return;
+    }
+    while true {
+        let f = read_frame(s, 5) ?? amqp.Frame { kind: 0, channel: 0, payload: b"" };
+        if f.kind == 0 {
+            return;
+        }
+        if f.kind == 8 {
+            continue;
+        }
+        let mr = amqp.decode_method(f.payload);
+        guard let m = mr else let e = err_of(mr) { note(s, "server: " + e); return; }
+        let ch = f.channel;
+        let k = m.class_id * 1000 + m.method_id;
+        if ch == 0 {
+            note(s, "server: connection " + describe(m));
+            if k == 10050 {
+                send_method(s, 0, amqp.method(10, 51, []));
+                return;
+            }
+            continue;
+        }
+        note(s, "server: ch" + to_str(ch) + " " + describe(m));
+        if k == 20010 {
+            send_method(s, ch, amqp.method(20, 11, [amqp.arg_bytes(b"")]));
+        } else if k == 20040 {
+            send_method(s, ch, amqp.method(20, 41, []));
+        } else if k == 40010 {
+            send_method(s, ch, amqp.method(40, 11, []));
+        } else if k == 40020 {
+            send_method(s, ch, amqp.method(40, 21, []));
+        } else if k == 40030 {
+            send_method(s, ch, amqp.method(40, 31, []));
+        } else if k == 40040 {
+            send_method(s, ch, amqp.method(40, 51, []));
+        } else if k == 50010 {
+            let name = m.args[1].s;
+            if name == "missing" && m.args[2].i == 1 {
+                send_method(s, ch, amqp.method(20, 40, [amqp.arg_int(404), amqp.arg_str("NOT_FOUND - no queue 'missing' in vhost '/'"),
+                                                      amqp.arg_int(50), amqp.arg_int(10)]));
+            } else if name == "locked" {
+                send_method(s, ch, amqp.method(20, 40, [amqp.arg_int(406),
+                    amqp.arg_str("PRECONDITION_FAILED - inequivalent arg 'durable' for queue 'locked' in vhost '/'"),
+                    amqp.arg_int(50), amqp.arg_int(10)]));
+            } else if name != "slow" {
+                if name == "" {
+                    name = "amq.gen-x1";
+                }
+                send_method(s, ch, amqp.method(50, 11, [amqp.arg_str(name), amqp.arg_int(3), amqp.arg_int(1)]));
+            }
+        } else if k == 50020 {
+            send_method(s, ch, amqp.method(50, 21, []));
+        } else if k == 50050 {
+            send_method(s, ch, amqp.method(50, 51, []));
+        } else if k == 50030 {
+            send_method(s, ch, amqp.method(50, 31, [amqp.arg_int(7)]));
+        } else if k == 50040 {
+            send_method(s, ch, amqp.method(50, 41, [amqp.arg_int(2)]));
+        } else if k == 60010 {
+            if m.args[1].i == 99 {
+                send_method(s, ch, amqp.method(20, 20, [amqp.arg_bool(false)]));
+            }
+            send_method(s, ch, amqp.method(60, 11, []));
+        }
+    }
+}
+
+fn outcome[T](r: result[T, str]) -> str {
+    guard let _v = r else let e = err_of(r) { return e; }
+    return "ok";
+}
+
+fn show(what: str, r: result[bool, str]) {
+    guard let _v = r else let e = err_of(r) { println("client: " + what + ": " + e); return; }
+    println("client: " + what + ": ok");
+}
+
+fn scenario_channels() {
+    println("-- channels and topology");
+    let s = listen();
+    spawn srv_broker(s);
+    let cr = amqp.dial(url(s, ""), amqp.options(), soon(5));
+    guard let c = cr else let e = err_of(cr) { panic(e); }
+    let chr = amqp.channel(c, soon(5));
+    guard let ch = chr else let e = err_of(chr) { panic(e); }
+    let eo = amqp.exchange_options();
+    show("exchange_declare", amqp.exchange_declare(ch, "events", "topic", eo, soon(5)));
+    show("exchange_bind", amqp.exchange_bind(ch, "audit", "events", "#", amqp.table(), soon(5)));
+    show("exchange_unbind", amqp.exchange_unbind(ch, "audit", "events", "#", amqp.table(), soon(5)));
+    let qo = amqp.durable();
+    amqp.table_set(qo.args, "x-queue-type", amqp.str_value("quorum"));
+    let qr = amqp.queue_declare(ch, "jobs", qo, soon(5));
+    guard let q = qr else let e = err_of(qr) { panic(e); }
+    println("client: queue " + q.name + " messages=" + to_str(q.messages) + " consumers=" + to_str(q.consumers));
+    let anon = amqp.queue_options();
+    anon.exclusive = true;
+    anon.auto_delete = true;
+    let ar = amqp.queue_declare(ch, "", anon, soon(5));
+    guard let aq = ar else let e = err_of(ar) { panic(e); }
+    println("client: the broker named the queue " + aq.name);
+    show("queue_bind", amqp.queue_bind(ch, "jobs", "events", "order.*", amqp.table(), soon(5)));
+    show("queue_unbind", amqp.queue_unbind(ch, "jobs", "events", "order.*", amqp.table(), soon(5)));
+    let pr = amqp.queue_purge(ch, "jobs", soon(5));
+    println("client: purged " + to_str(pr ?? -1));
+    let dr = amqp.queue_delete(ch, "jobs", true, false, soon(5));
+    println("client: deleted with " + to_str(dr ?? -1) + " messages");
+    show("qos", amqp.qos(ch, 32, soon(5)));
+    show("qos 99 (the broker pauses the channel first)", amqp.qos(ch, 99, soon(5)));
+    println("client: channel active=" + to_str(ch.active));
+    show("exchange_delete", amqp.exchange_delete(ch, "events", false, soon(5)));
+
+    // a 404 closes the channel, not the connection
+    let pass = amqp.queue_options();
+    pass.passive = true;
+    println("client: passive declare: " + outcome(amqp.queue_declare(ch, "missing", pass, soon(5))));
+    println("client: channel closed=" + to_str(amqp.channel_is_closed(ch)) + " why=" + amqp.channel_error(ch));
+    show("a call on the closed channel", amqp.qos(ch, 1, soon(5)));
+    println("client: connection closed=" + to_str(amqp.is_closed(c)));
+
+    let ch2r = amqp.channel(c, soon(5));
+    guard let ch2 = ch2r else let e = err_of(ch2r) { panic(e); }
+    println("client: another channel, number " + to_str(ch2.id));
+    println("client: declare locked: " + outcome(amqp.queue_declare(ch2, "locked", amqp.queue_options(), soon(5))));
+
+    let ch3r = amqp.channel(c, soon(5));
+    guard let ch3 = ch3r else let e = err_of(ch3r) { panic(e); }
+    let t0 = time.mono();
+    let sr = amqp.queue_declare(ch3, "slow", amqp.queue_options(), until_of(time.mono() + 300000000));
+    let waited = (time.mono() - t0) as int / 1000000;
+    println("client: " + outcome(sr) + " (after about " + to_str((waited + 50) / 100 * 100) + " ms)");
+    println("client: timed-out channel closed=" + to_str(amqp.channel_is_closed(ch3)));
+
+    let ch4r = amqp.channel(c, soon(5));
+    guard let ch4 = ch4r else let e = err_of(ch4r) { panic(e); }
+    show("close_channel", amqp.close_channel(ch4, soon(5)));
+    show("close_channel again", amqp.close_channel(ch4, soon(5)));
+    amqp.close(c, soon(5));
+    println("client: after close, a new channel: " + outcome(amqp.channel(c, soon(1))));
+    time.sleep(100000000);
+    drain_log(s);
+}
+
+scenario_channels();
