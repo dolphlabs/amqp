@@ -1,0 +1,41 @@
+-- connect
+server RabbitMQ, frame_max 131072, channel_max 2047, heartbeat 60
+closed: true
+-- work queue: 1000 persistent messages, confirmed, consumed in order
+all confirmed and acked: true
+queue holds 1000
+consumed 1000, in order: true
+queue holds 0 after the acks
+-- topic exchange
+order.* got 2, # got 4
+first in live.orders: order.created = order.created (1 more)
+-- RPC with a server-named reply queue
+reply queue named by the broker: true
+ping -> PING (req-0)
+hello -> HELLO (req-1)
+slang -> SLANG (req-2)
+-- returns, nacks and broker errors
+returned 312 NO_ROUTE body=lost
+and acked: true
+x-max-length 1: first acked true, second acked false
+passive declare of a missing queue: amqp: 404 NOT_FOUND - no queue 'live.missing' in vhost '/'
+a call after it: amqp: 404 NOT_FOUND - no queue 'live.missing' in vhost '/'
+redeclare live.tiny as durable: amqp: 406 PRECONDITION_FAILED - inequivalent arg 'durable' for queue 'live.tiny' in vhost '/': received 'true' but current is 'false'
+the connection is open: true
+-- every header type and a 5 MB body through RabbitMQ
+headers came back the same: true (17 keys); priority 3, timestamp 1700000000, id m-1
+5 MB body intact: true (frame_max 131072)
+-- the queue deleted under a consumer
+got still here
+next: the broker cancelled the consumer: true
+-- the broker closes the connection
+next: amqp: 320 CONNECTION_FORCED - test shutdown
+closed: true, why: amqp: 320 CONNECTION_FORCED - 
+-- TLS
+got over TLS over amqps
+without the CA: amqp: tls: error...
+-- with Go's amqp091-go
+go got {"slang":0} type=application/json corr=slang-0 mode=2 headers=big=1099511627776(int64);from=slang(string);list=[a 2]([]interface {});n=0(int32);ok=true(bool);pi=3.25(float64);
+go got {"slang":1} type=application/json corr=slang-1 mode=2 headers=big=1099511627776(int64);from=slang(string);list=[a 2]([]interface {});n=1(int32);ok=true(bool);pi=3.25(float64);
+slang got {"go":0} type=application/json corr=go-0 mode=2 prio=4 headers=big=l1099511627776;from=S2;list=A[2];n=I0;ok=t1;pi=d3.25
+slang got {"go":1} type=application/json corr=go-1 mode=2 prio=4 headers=big=l1099511627776;from=S2;list=A[2];n=I1;ok=t1;pi=d3.25
