@@ -4,10 +4,12 @@ A RabbitMQ (AMQP 0-9-1) client for slang: work queues, pub/sub and RPC
 over the stdlib `net` package, with deadlines, verified TLS and bounded
 memory. The plan is [AMQP_PRD.md](AMQP_PRD.md).
 
-**Status:** milestone 6 of 7: a complete client -- connection, channels
-and topology, publishing with confirms and returns, consuming -- checked
-against RabbitMQ 4.1 and Go's amqp091-go. A benchmark against
-amqp091-go comes next.
+**Status:** all 7 milestones: connection, channels and topology,
+publishing with confirms and returns, consuming, a live suite against
+RabbitMQ 4.1 and Go's amqp091-go, and a benchmark. Against amqp091-go
+on one machine, slang publishes at about the same rate on 44% less CPU
+per message, consumes 11% faster on 30% less, matches it on confirmed
+publishing and latency, and uses less memory (bench/README.md).
 
 ```slang
 import "amqp";
