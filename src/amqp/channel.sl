@@ -47,6 +47,12 @@ pub gc struct Channel {
     confirm_waiters: [chan[bool]],
     returns: chan[Return],
     returns_dropped: int,
+    // consuming: consumers by tag (guarded by clock2), the one whose
+    // consume-ok has not named its tag yet, the QoS prefetch, get-ok
+    consumers: map[str]Consumer,
+    awaiting_tag: opt[Consumer],
+    prefetch: int,
+    gets: chan[Delivery],
     // a message arriving: its method (in_kind 1 return, 2 deliver, 3
     // get-ok), then its header, then body frames up to in_size
     in_kind: int,
@@ -128,7 +134,8 @@ pub fn channel(c: Conn, deadline: until) -> result[Channel, str] {
     let ch = Channel { conn: c, id: id, state: CH_OPEN, why: "", rpc: make_mutex(), replies: make_chan(4),
                        active: true, closing: false, plock: make_mutex(), clock2: make_mutex(), confirming: false,
                        next_seq: 1, unconfirmed: {}, nacked: {}, nack_seen: false, confirm_waiters: [],
-                       returns: make_chan(RETURN_BUFFER), returns_dropped: 0, in_kind: 0,
+                       returns: make_chan(RETURN_BUFFER), returns_dropped: 0, consumers: {}, awaiting_tag: none,
+                       prefetch: 0, gets: make_chan(1), in_kind: 0,
                        in_method: method(0, 0, []), in_header: false, in_props: properties(), in_size: 0,
                        in_body: builder.new_bytes(), in_got: 0 };
     c.chans[id] = ch;
@@ -182,7 +189,9 @@ fn end_channel(ch: Channel, why: str) {
     }
     chan_close(ch.replies);
     chan_close(ch.returns);
+    chan_close(ch.gets);
     wake_confirm_waiters(ch);
+    end_consumers(ch);
 }
 
 // Frees the channel's number.
@@ -400,8 +409,22 @@ fn message_done(ch: Channel) -> result[bool, str] {
         }
         return ok(true);
     }
-    ch.conn.fail_code = 505;
-    return err("amqp: a delivery on channel " + to_str(ch.id) + ", which has no consumer");
+    if kind == 2 {
+        let d = Delivery { consumer_tag: m.args[0].s, delivery_tag: m.args[1].i, redelivered: m.args[2].i != 0,
+                           exchange: m.args[3].s, routing_key: m.args[4].s, message_count: 0, props: ch.in_props,
+                           body: body };
+        return deliver(ch, d);
+    }
+    let g = Delivery { consumer_tag: "", delivery_tag: m.args[0].i, redelivered: m.args[1].i != 0, exchange: m.args[2].s,
+                       routing_key: m.args[3].s, message_count: m.args[4].i, props: ch.in_props, body: body };
+    select {
+        case chan_send(ch.gets, g) { }
+        default {
+            ch.conn.fail_code = 505;
+            return err("amqp: a basic.get-ok nobody asked for on channel " + to_str(ch.id));
+        }
+    }
+    return ok(true);
 }
 
 fn channel_method(ch: Channel, m: Method) -> result[bool, str] {
@@ -416,6 +439,20 @@ fn channel_method(ch: Channel, m: Method) -> result[bool, str] {
         ch.active = m.args[0].i != 0;
         send_method(ch.conn, ch.id, method(20, 21, [arg_int(m.args[0].i)]));
         return ok(true);
+    }
+    if k == 60030 {
+        // the broker cancels a consumer: its queue was deleted, or the
+        // node it lives on went away
+        let tag = m.args[0].s;
+        end_consumer(ch, tag, "amqp: the broker cancelled consumer " + tag +
+                              " (its queue was deleted, or the node it lives on went down)");
+        if m.args[1].i == 0 {
+            send_method(ch.conn, ch.id, method(60, 31, [arg_str(tag)]));
+        }
+        return ok(true);
+    }
+    if k == 60021 {
+        consume_ok(ch, m.args[0].s);
     }
     if is_reply(k) {
         select {
@@ -436,7 +473,7 @@ fn channel_method(ch: Channel, m: Method) -> result[bool, str] {
 fn is_reply(k: int) -> bool {
     return k == 20011 || k == 20041 || k == 40011 || k == 40021 || k == 40031 || k == 40051 || k == 50011 ||
            k == 50021 || k == 50031 || k == 50041 || k == 50051 || k == 60011 || k == 60021 || k == 60031 ||
-           k == 60111 || k == 85011;
+           k == 60072 || k == 60111 || k == 85011;
 }
 
 // ---- exchanges -------------------------------------------------------------
@@ -528,5 +565,6 @@ pub fn qos(ch: Channel, prefetch: int, deadline: until) -> result[bool, str] {
     }
     let r = call(ch, method(60, 10, [arg_int(0), arg_int(prefetch), arg_bool(false)]), 60, 11, deadline);
     guard let _m = r else let e = err_of(r) { return err(e); }
+    ch.prefetch = prefetch;
     return ok(true);
 }

@@ -17,6 +17,8 @@ gc struct Srv {
     data: bytes,
     pos: int,
     log: chan[str],
+    // the channel of the last frame read
+    last_ch: int,
 }
 
 fn soon(s: int) -> until {
@@ -28,7 +30,7 @@ fn listen() -> Srv {
     guard let lfd = lr else let e = err_of(lr) { panic(e); }
     let pr = net.port(lfd);
     guard let port = pr else let e = err_of(pr) { panic(e); }
-    return Srv { lfd: lfd as int, port: port as int, fd: -1, data: b"", pos: 0, log: make_chan(64) };
+    return Srv { lfd: lfd as int, port: port as int, fd: -1, data: b"", pos: 0, log: make_chan(64), last_ch: 0 };
 }
 
 fn note(s: Srv, line: str) {
@@ -48,6 +50,7 @@ fn read_frame(s: Srv, secs: int) -> opt[amqp.Frame] {
         guard let sc = sr else let e = err_of(sr) { note(s, "server: bad frame: " + e); return none; }
         if sc.status == 1 {
             s.pos = sc.next;
+            s.last_ch = sc.frame.channel;
             return some(sc.frame);
         }
         let rr = net.recv_until(s.fd, 65536, soon(secs));
@@ -705,3 +708,174 @@ fn scenario_publish() {
 }
 
 scenario_publish();
+
+// ---- consuming (milestone 5) ----------------------------------------------
+
+fn push_message(s: Srv, ch: int, m: amqp.Method, p: amqp.Properties, body: bytes) {
+    send_method(s, ch, m);
+    send(s, amqp.encode_frame(2, ch, amqp.encode_header(60, len(body), p) ?? b""));
+    let off = 0;
+    while off < len(body) {
+        let end = off + 4088;
+        if end > len(body) {
+            end = len(body);
+        }
+        send(s, amqp.encode_frame(3, ch, body[off..end]));
+        off = end;
+    }
+}
+
+fn deliver_method(tag: str, dtag: int, redelivered: bool, key: str) -> amqp.Method {
+    return amqp.method(60, 60, [amqp.arg_str(tag), amqp.arg_int(dtag), amqp.arg_bool(redelivered), amqp.arg_str("work"),
+                                amqp.arg_str(key)]);
+}
+
+// Pushes deliveries on basic.consume: "jobs" a stray for an unknown tag
+// and three (one 6000 bytes), "doomed" one and then cancels the consumer,
+// "flood" five; answers basic.get on "full" and "empty".
+fn srv_consumer(s: Srv) {
+    if !welcome(s, 0, 4096, 0) {
+        return;
+    }
+    let dtag = 0;
+    while true {
+        let m = read_method(s) ?? no_method();
+        let k = m.class_id * 1000 + m.method_id;
+        if k == 0 {
+            return;
+        }
+        if k == 10050 {
+            send_method(s, 0, amqp.method(10, 51, []));
+            return;
+        }
+        let ch = 1;
+        if k == 20010 {
+            send_method(s, last_channel(s), amqp.method(20, 11, [amqp.arg_bytes(b"")]));
+            continue;
+        }
+        ch = last_channel(s);
+        if k == 20040 {
+            note(s, "server: ch" + to_str(ch) + " channel.close " + to_str(m.args[0].i));
+            send_method(s, ch, amqp.method(20, 41, []));
+        } else if k == 60010 {
+            send_method(s, ch, amqp.method(60, 11, []));
+        } else if k == 60020 {
+            let queue = m.args[1].s;
+            let tag = m.args[2].s;
+            if tag == "" {
+                tag = "amq.ctag-" + queue;
+            }
+            note(s, "server: consume " + queue + " no_ack=" + to_str(m.args[4].i) + " tag=" + tag);
+            send_method(s, ch, amqp.method(60, 21, [amqp.arg_str(tag)]));
+            let p = amqp.properties();
+            p.content_type = "text/plain";
+            p.correlation_id = "c-9";
+            if queue == "jobs" {
+                // a stray first: the client's reject of it is written
+                // before the deliveries it reads, so the log's order is fixed
+                push_message(s, ch, deliver_method("ghost", 99, false, "x"), amqp.properties(), to_bytes("stray"));
+                dtag += 1;
+                push_message(s, ch, deliver_method(tag, dtag, false, "a"), p, to_bytes("first"));
+                dtag += 1;
+                push_message(s, ch, deliver_method(tag, dtag, true, "b"), amqp.properties(), strings.bytes_zero(6000));
+                dtag += 1;
+                push_message(s, ch, deliver_method(tag, dtag, false, "c"), amqp.properties(), b"");
+            } else if queue == "doomed" {
+                dtag += 1;
+                push_message(s, ch, deliver_method(tag, dtag, false, "d"), amqp.properties(), to_bytes("last one"));
+                send_method(s, ch, amqp.method(60, 30, [amqp.arg_str(tag), amqp.arg_bool(true)]));
+            } else if queue == "flood" {
+                for i in 0..5 {
+                    dtag += 1;
+                    push_message(s, ch, deliver_method(tag, dtag, false, "f"), amqp.properties(), to_bytes("x"));
+                }
+            }
+        } else if k == 60030 {
+            note(s, "server: cancel " + m.args[0].s);
+            send_method(s, ch, amqp.method(60, 31, [m.args[0]]));
+        } else if k == 60070 {
+            if m.args[1].s == "full" {
+                dtag += 1;
+                push_message(s, ch, amqp.method(60, 71, [amqp.arg_int(dtag), amqp.arg_bool(false), amqp.arg_str(""),
+                                                        amqp.arg_str("full"), amqp.arg_int(4)]), amqp.properties(),
+                             to_bytes("polled"));
+            } else {
+                send_method(s, ch, amqp.method(60, 72, [amqp.arg_str("")]));
+            }
+        } else if k == 60080 {
+            note(s, "server: ack " + to_str(m.args[0].i) + " multiple=" + to_str(m.args[1].i));
+        } else if k == 60120 {
+            note(s, "server: nack " + to_str(m.args[0].i) + " multiple=" + to_str(m.args[1].i) + " requeue=" +
+                    to_str(m.args[2].i));
+        } else if k == 60090 {
+            note(s, "server: reject " + to_str(m.args[0].i) + " requeue=" + to_str(m.args[1].i));
+        } else {
+            note(s, "server: " + to_str(m.class_id) + "." + to_str(m.method_id));
+        }
+    }
+}
+
+// The channel of the last frame read.
+fn last_channel(s: Srv) -> int {
+    return s.last_ch;
+}
+
+fn show_delivery(nr: result[opt[amqp.Delivery], str]) {
+    guard let got = nr else let e = err_of(nr) { println("client: next: " + e); return; }
+    guard let d = got else { println("client: next: nothing yet"); return; }
+    println("client: delivery " + to_str(d.delivery_tag) + " key=" + d.routing_key + " redelivered=" + to_str(d.redelivered) +
+            " body=" + to_str(len(d.body)) + " bytes type=" + d.props.content_type + " corr=" + d.props.correlation_id +
+            " count=" + to_str(d.message_count));
+}
+
+fn scenario_consume() {
+    println("-- consuming");
+    let s = listen();
+    spawn srv_consumer(s);
+    let cr = amqp.dial(url(s, ""), amqp.options(), soon(5));
+    guard let c = cr else let e = err_of(cr) { panic(e); }
+    let chr = amqp.channel(c, soon(5));
+    guard let ch = chr else let e = err_of(chr) { panic(e); }
+    show("qos", amqp.qos(ch, 10, soon(5)));
+    let sr = amqp.consume(ch, "jobs", amqp.consume_options(), soon(5));
+    guard let sub = sr else let e = err_of(sr) { panic(e); }
+    println("client: consumer tag " + sub.tag);
+    show_delivery(amqp.next(sub, soon(5)));
+    show_delivery(amqp.next(sub, soon(5)));
+    show_delivery(amqp.next(sub, soon(5)));
+    show("ack 1", amqp.ack(ch, 1, false));
+    show("nack 2 requeue", amqp.nack(ch, 2, false, true));
+    show("reject 3", amqp.reject(ch, 3, false));
+    show_delivery(amqp.next(sub, until_of(time.mono() + 100000000)));
+    show("cancel", amqp.cancel(sub, soon(5)));
+    show_delivery(amqp.next(sub, soon(5)));
+
+    let dr = amqp.consume(ch, "doomed", amqp.consume_options(), soon(5));
+    guard let doomed = dr else let e = err_of(dr) { panic(e); }
+    show_delivery(amqp.next(doomed, soon(5)));
+    show_delivery(amqp.next(doomed, soon(5)));
+    show("ack 4", amqp.ack(ch, 4, false));
+
+    show_delivery(amqp.get(ch, "full", false, soon(5)));
+    show_delivery(amqp.get(ch, "empty", false, soon(5)));
+
+    let ch2r = amqp.channel(c, soon(5));
+    guard let ch2 = ch2r else let e = err_of(ch2r) { panic(e); }
+    let fo = amqp.consume_options();
+    fo.buffer = 2;
+    fo.tag = "small";
+    let fr = amqp.consume(ch2, "flood", fo, soon(5));
+    guard let flood = fr else let e = err_of(fr) { panic(e); }
+    time.sleep(200000000);
+    println("client: flooded channel closed=" + to_str(amqp.channel_is_closed(ch2)));
+    show_delivery(amqp.next(flood, soon(5)));
+    show_delivery(amqp.next(flood, soon(5)));
+    show_delivery(amqp.next(flood, soon(5)));
+    println("client: first channel still open=" + to_str(!amqp.channel_is_closed(ch)));
+    amqp.close(c, soon(5));
+    show_delivery(amqp.next(sub, soon(1)));
+    time.sleep(100000000);
+    drain_log(s);
+}
+
+scenario_consume();

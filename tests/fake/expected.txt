@@ -131,3 +131,39 @@ server: message 8 exchange= key=unroutable mandatory=1 body=4 bytes in 1 frames 
 server: message 9 exchange= key=never mandatory=0 body=1 bytes in 1 frames type= mode=0 prio=-1 corr= reply_to= exp= id= ts=-1 kind= app= headers=
 server: message 10 exchange= key=huge mandatory=0 body=1 bytes in 1 frames type= mode=0 prio=-1 corr= reply_to= exp= id= ts=-1 kind= app= headers=
 server: client sent 10.50 505
+-- consuming
+client: qos: ok
+client: consumer tag amq.ctag-jobs
+client: delivery 1 key=a redelivered=false body=5 bytes type=text/plain corr=c-9 count=0
+client: delivery 2 key=b redelivered=true body=6000 bytes type= corr= count=0
+client: delivery 3 key=c redelivered=false body=0 bytes type= corr= count=0
+client: ack 1: ok
+client: nack 2 requeue: ok
+client: reject 3: ok
+client: next: nothing yet
+client: cancel: ok
+client: next: amqp: the consumer was cancelled
+client: delivery 4 key=d redelivered=false body=8 bytes type= corr= count=0
+client: next: amqp: the broker cancelled consumer amq.ctag-doomed (its queue was deleted, or the node it lives on went down)
+client: ack 4: ok
+client: delivery 5 key=full redelivered=false body=6 bytes type= corr= count=4
+client: next: nothing yet
+client: flooded channel closed=true
+client: delivery 6 key=f redelivered=false body=1 bytes type= corr= count=0
+client: delivery 7 key=f redelivered=false body=1 bytes type= corr= count=0
+client: next: amqp: consumer small fell more than its buffer of deliveries behind; set qos (prefetch) before consuming
+client: first channel still open=true
+client: next: amqp: the consumer was cancelled
+server: start-ok PLAIN app:s3cr@t product=slang amqp
+server: tune-ok channel_max=2047 frame_max=4096 heartbeat=60
+server: open vhost=/
+server: consume jobs no_ack=0 tag=amq.ctag-jobs
+server: reject 99 requeue=1
+server: ack 1 multiple=0
+server: nack 2 multiple=0 requeue=1
+server: reject 3 requeue=0
+server: cancel amq.ctag-jobs
+server: consume doomed no_ack=0 tag=amq.ctag-doomed
+server: ack 4 multiple=0
+server: consume flood no_ack=0 tag=small
+server: ch2 channel.close 406

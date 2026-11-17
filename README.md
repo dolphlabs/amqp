@@ -4,10 +4,11 @@ A RabbitMQ (AMQP 0-9-1) client for slang: work queues, pub/sub and RPC
 over the stdlib `net` package, with deadlines, verified TLS and bounded
 memory. The plan is [AMQP_PRD.md](AMQP_PRD.md).
 
-**Status:** milestone 4 of 7: the wire layer, the connection, channels
-with topology, and publishing: properties, bodies split at frame-max,
-publisher confirms (wait_confirm, wait_confirms) and mandatory returns.
-Consuming comes next.
+**Status:** milestone 5 of 7: the wire layer, the connection, channels
+with topology, publishing with confirms and returns, and consuming:
+deliveries pulled with `next`, ack/nack/reject, cancel from either side,
+and `get`. A live suite against RabbitMQ and a benchmark against Go's
+`amqp091-go` come next.
 
 ```slang
 import "amqp";
@@ -27,6 +28,16 @@ msg.props.delivery_mode = 2;                                   // persistent
 amqp.confirm_select(ch, deadline);
 let pr = amqp.publish(ch, "events", "order.created", msg, false);   // result[int, str]: sequence number
 let acked = amqp.wait_confirm(ch, pr ?? 0, deadline);          // result[bool, str]
+
+let sr = amqp.consume(ch, "jobs", amqp.consume_options(), deadline);
+guard let sub = sr else let e = err_of(sr) { panic(e); }
+while true {
+    let nr = amqp.next(sub, deadline);              // result[opt[Delivery], str]
+    guard let got = nr else let e = err_of(nr) { break; }   // the consumer ended, and why
+    guard let d = got else { continue; }             // none: the deadline passed
+    handle(d.body);
+    amqp.ack(ch, d.delivery_tag, false);
+}
 amqp.close(conn, deadline);
 ```
 
@@ -42,7 +53,9 @@ runs the unit tests (`slangc test src/amqp`), `tests/fake` (the connection
 against scripted brokers: refused logins and vhosts, another protocol,
 forced closes, malformed and oversized frames, heartbeats, blocking, and
 every channel and topology call, broker errors and timeouts, publishing
-with confirms, nacks, batched acks and returns), and
+with confirms, nacks, batched acks and returns, consuming with every
+kind of acknowledgement, cancels from both sides, get, and a consumer
+that falls behind), and
 `tests/wire`: 422 frames
 the package must decode, render and encode back byte for byte, or refuse.
 `tests/wire/gen.py` writes them with Python's `struct` to the 0-9-1 spec
