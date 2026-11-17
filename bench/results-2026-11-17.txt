@@ -1,0 +1,32 @@
+slang publish  rate=25090                     cpu_us/msg=17.4   rss_mb=6.0
+slang consume  rate=16425                     cpu_us/msg=35.1   rss_mb=17.0
+slang confirm  rate=16786                     cpu_us/msg=28.2   rss_mb=8.5
+slang latency  p50_us=557 p99_us=1633         cpu_us/msg=142.0  rss_mb=3.8
+go    publish  rate=29752                     cpu_us/msg=28.8   rss_mb=11.2
+go    consume  rate=15454                     cpu_us/msg=58.5   rss_mb=11.5
+go    confirm  rate=19726                     cpu_us/msg=34.9   rss_mb=11.3
+go    latency  p50_us=516 p99_us=881          cpu_us/msg=128.0  rss_mb=10.2
+go    publish  rate=34211                     cpu_us/msg=29.2   rss_mb=11.2
+go    consume  rate=17400                     cpu_us/msg=55.0   rss_mb=11.4
+go    confirm  rate=17134                     cpu_us/msg=32.8   rss_mb=11.2
+go    latency  p50_us=571 p99_us=3315         cpu_us/msg=160.0  rss_mb=10.0
+slang publish  rate=29280                     cpu_us/msg=17.4   rss_mb=6.6
+slang consume  rate=20854                     cpu_us/msg=38.4   rss_mb=7.3
+slang confirm  rate=20508                     cpu_us/msg=26.9   rss_mb=8.5
+slang latency  p50_us=633 p99_us=1238         cpu_us/msg=152.0  rss_mb=3.9
+slang publish  rate=37981                     cpu_us/msg=13.7   rss_mb=5.3
+slang consume  rate=21722                     cpu_us/msg=37.3   rss_mb=7.9
+slang confirm  rate=21389                     cpu_us/msg=27.1   rss_mb=8.7
+slang latency  p50_us=590 p99_us=1196         cpu_us/msg=144.0  rss_mb=3.9
+go    publish  rate=36292                     cpu_us/msg=26.5   rss_mb=10.8
+go    consume  rate=19796                     cpu_us/msg=52.4   rss_mb=12.0
+go    confirm  rate=20488                     cpu_us/msg=39.0   rss_mb=11.2
+go    latency  p50_us=607 p99_us=1105         cpu_us/msg=156.0  rss_mb=9.8
+go    publish  rate=36161                     cpu_us/msg=28.3   rss_mb=10.9
+go    consume  rate=19551                     cpu_us/msg=53.0   rss_mb=11.6
+go    confirm  rate=21036                     cpu_us/msg=38.9   rss_mb=11.2
+go    latency  p50_us=597 p99_us=1264         cpu_us/msg=158.0  rss_mb=10.1
+slang publish  rate=37105                     cpu_us/msg=14.4   rss_mb=6.5
+slang consume  rate=20108                     cpu_us/msg=38.5   rss_mb=10.1
+slang confirm  rate=19955                     cpu_us/msg=28.2   rss_mb=8.6
+slang latency  p50_us=584 p99_us=1110         cpu_us/msg=140.0  rss_mb=3.8
