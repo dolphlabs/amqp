@@ -511,3 +511,197 @@ fn scenario_channels() {
 }
 
 scenario_channels();
+
+// ---- publishing (milestone 4) ---------------------------------------------
+
+fn props_text(p: amqp.Properties) -> str {
+    let hs = "";
+    if let t = p.headers {
+        for k in 0..len(t.keys) {
+            hs = hs + t.keys[k] + "=" + (amqp.as_str(t.vals[k]) ?? to_str(amqp.as_int(t.vals[k]) ?? -1)) + ";";
+        }
+    }
+    return "type=" + p.content_type + " mode=" + to_str(p.delivery_mode) + " prio=" + to_str(p.priority) + " corr=" +
+           p.correlation_id + " reply_to=" + p.reply_to + " exp=" + p.expiration + " id=" + p.message_id + " ts=" +
+           to_str(p.timestamp) + " kind=" + p.type_name + " app=" + p.app_id + " headers=" + hs;
+}
+
+// Reassembles published messages and answers them: confirms (key "bad"
+// nacked, "batch" held until "batch-end" acks them all at once, "never"
+// never), a mandatory "unroutable" returned first, "huge" answered with a
+// return whose header claims 1 GB.
+fn srv_publisher(s: Srv) {
+    if !welcome(s, 0, 4096, 0) {
+        return;
+    }
+    let seq = 0;
+    let confirming = false;
+    let held = 0;
+    while true {
+        let f = read_frame(s, 5) ?? amqp.Frame { kind: 0, channel: 0, payload: b"" };
+        if f.kind == 0 {
+            return;
+        }
+        if f.kind == 8 {
+            continue;
+        }
+        let ch = f.channel;
+        if f.kind != 1 {
+            note(s, "server: a content frame without a method");
+            return;
+        }
+        let mr = amqp.decode_method(f.payload);
+        guard let m = mr else let e = err_of(mr) { note(s, "server: " + e); return; }
+        let k = m.class_id * 1000 + m.method_id;
+        if k == 10050 {
+            send_method(s, 0, amqp.method(10, 51, []));
+            return;
+        }
+        if k == 20010 {
+            send_method(s, ch, amqp.method(20, 11, [amqp.arg_bytes(b"")]));
+            continue;
+        }
+        if k == 85010 {
+            // confirm sequence numbers count from confirm.select
+            confirming = true;
+            seq = 0;
+            send_method(s, ch, amqp.method(85, 11, []));
+            continue;
+        }
+        if k != 60040 {
+            note(s, "server: unexpected " + to_str(m.class_id) + "." + to_str(m.method_id));
+            continue;
+        }
+        let key = m.args[2].s;
+        let hf = read_frame(s, 5) ?? amqp.Frame { kind: 0, channel: 0, payload: b"" };
+        let hr = amqp.decode_header(hf.payload);
+        guard let h = hr else let e = err_of(hr) { note(s, "server: header: " + e); return; }
+        let got = 0;
+        let frames = 0;
+        let body = b"";
+        while got < h.body_size {
+            let bf = read_frame(s, 5) ?? amqp.Frame { kind: 0, channel: 0, payload: b"" };
+            if bf.kind != 3 {
+                note(s, "server: expected a body frame");
+                return;
+            }
+            got += len(bf.payload);
+            frames += 1;
+            body = body + bf.payload;
+        }
+        seq += 1;
+        note(s, "server: message " + to_str(seq) + " exchange=" + m.args[1].s + " key=" + key + " mandatory=" +
+                to_str(m.args[3].i) + " body=" + to_str(got) + " bytes in " + to_str(frames) + " frames " +
+                props_text(h.props));
+        if key == "unroutable" && m.args[3].i == 1 {
+            send_method(s, ch, amqp.method(60, 50, [amqp.arg_int(312), amqp.arg_str("NO_ROUTE"), amqp.arg_str(m.args[1].s),
+                                                  amqp.arg_str(key)]));
+            let back = amqp.encode_header(60, len(body), h.props) ?? b"";
+            send(s, amqp.encode_frame(2, ch, back));
+            send(s, amqp.encode_frame(3, ch, body));
+        }
+        if key == "huge" {
+            send_method(s, ch, amqp.method(60, 50, [amqp.arg_int(312), amqp.arg_str("NO_ROUTE"), amqp.arg_str(""),
+                                                  amqp.arg_str(key)]));
+            let big = amqp.encode_header(60, 1000000000, amqp.properties()) ?? b"";
+            send(s, amqp.encode_frame(2, ch, big));
+            let m2 = read_method(s) ?? no_method();
+            note(s, "server: client sent " + to_str(m2.class_id) + "." + to_str(m2.method_id) + " " + to_str(m2.args[0].i));
+            return;
+        }
+        if !confirming || key == "never" {
+            continue;
+        }
+        if key == "bad" {
+            send_method(s, ch, amqp.method(60, 120, [amqp.arg_int(seq), amqp.arg_bool(false), amqp.arg_bool(false)]));
+        } else if key == "batch" {
+            held += 1;
+        } else if key == "batch-end" {
+            send_method(s, ch, amqp.method(60, 80, [amqp.arg_int(seq), amqp.arg_bool(true)]));
+            note(s, "server: acked " + to_str(held + 1) + " messages at once");
+            held = 0;
+        } else {
+            send_method(s, ch, amqp.method(60, 80, [amqp.arg_int(seq), amqp.arg_bool(false)]));
+        }
+    }
+}
+
+fn pub_msg(ch: amqp.Channel, key: str, body: str, mandatory: bool) -> int {
+    let r = amqp.publish(ch, "", key, amqp.publishing(to_bytes(body)), mandatory);
+    guard let seq = r else let e = err_of(r) { println("client: publish " + key + ": " + e); return -1; }
+    return seq;
+}
+
+fn scenario_publish() {
+    println("-- publishing");
+    let s = listen();
+    spawn srv_publisher(s);
+    let cr = amqp.dial(url(s, ""), amqp.options(), soon(5));
+    guard let c = cr else let e = err_of(cr) { panic(e); }
+    let chr = amqp.channel(c, soon(5));
+    guard let ch = chr else let e = err_of(chr) { panic(e); }
+
+    let big = amqp.publishing(strings.bytes_zero(10000));
+    big.props.content_type = "application/octet-stream";
+    big.props.delivery_mode = 2;
+    big.props.priority = 5;
+    big.props.correlation_id = "c-1";
+    big.props.reply_to = "replies";
+    big.props.expiration = "60000";
+    big.props.message_id = "m-1";
+    big.props.timestamp = 1700000000;
+    big.props.type_name = "invoice";
+    big.props.app_id = "billing";
+    let hs = amqp.table();
+    amqp.table_set(hs, "attempt", amqp.i32_value(3));
+    amqp.table_set(hs, "tenant", amqp.str_value("acme"));
+    big.props.headers = some(hs);
+    let br = amqp.publish(ch, "invoices", "jobs", big, false);
+    println("client: published 10000 bytes, sequence " + to_str(br ?? -1));
+    println("client: wait_confirm before confirm_select: " + outcome(amqp.wait_confirm(ch, 1, soon(1))));
+
+    show("confirm_select", amqp.confirm_select(ch, soon(5)));
+    let s1 = pub_msg(ch, "jobs", "a", false);
+    println("client: sequence " + to_str(s1) + " confirmed=" + outcome(amqp.wait_confirm(ch, s1, soon(5))) +
+            " acked=" + to_str(amqp.wait_confirm(ch, s1, soon(5)) ?? false));
+    let s2 = pub_msg(ch, "bad", "b", false);
+    println("client: sequence " + to_str(s2) + " acked=" + to_str(amqp.wait_confirm(ch, s2, soon(5)) ?? true));
+    pub_msg(ch, "batch", "x", false);
+    pub_msg(ch, "batch", "y", false);
+    pub_msg(ch, "batch", "z", false);
+    let s6 = pub_msg(ch, "batch-end", "end", false);
+    let all = amqp.wait_confirms(ch, soon(5));
+    println("client: sequence " + to_str(s6) + "; wait_confirms (a nack since the last) = " + to_str(all ?? true) +
+            " unconfirmed=" + to_str(amqp.unconfirmed(ch)));
+    pub_msg(ch, "jobs", "after", false);
+    println("client: wait_confirms again = " + to_str(amqp.wait_confirms(ch, soon(5)) ?? false));
+    println("client: sequence 99: " + outcome(amqp.wait_confirm(ch, 99, soon(1))));
+
+    let su = pub_msg(ch, "unroutable", "lost", true);
+    amqp.wait_confirm(ch, su, soon(5));
+    let rr = amqp.next_return(ch, soon(5));
+    guard let got = rr else let e = err_of(rr) { panic(e); }
+    guard let ret = got else { panic("no return"); }
+    println("client: returned " + to_str(ret.reply_code) + " " + ret.reply_text + " key=" + ret.routing_key + " body=" +
+            to_str(ret.body));
+    let again = amqp.next_return(ch, until_of(time.mono() + 100000000));
+    let another = false;
+    if let maybe = again {
+        if let _r = maybe {
+            another = true;
+        }
+    }
+    println("client: another return: " + to_str(another));
+
+    let sn = pub_msg(ch, "never", "n", false);
+    println("client: sequence " + to_str(sn) + ": " + outcome(amqp.wait_confirm(ch, sn, until_of(time.mono() + 200000000))));
+
+    pub_msg(ch, "huge", "h", false);
+    time.sleep(300000000);
+    println("client: closed=" + to_str(amqp.is_closed(c)) + " why=" + amqp.close_error(c));
+    println("client: publish after: " + outcome(amqp.publish(ch, "", "jobs", amqp.publishing(b""), false)));
+    time.sleep(100000000);
+    drain_log(s);
+}
+
+scenario_publish();
