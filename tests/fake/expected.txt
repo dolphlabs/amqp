@@ -101,3 +101,33 @@ server: ch3 channel.close 200
 server: ch4 channel.open
 server: ch4 channel.close 200
 server: connection 10.50
+-- publishing
+client: published 10000 bytes, sequence 0
+client: wait_confirm before confirm_select: amqp: the channel is not in confirm mode (confirm_select)
+client: confirm_select: ok
+client: sequence 1 confirmed=ok acked=true
+client: sequence 2 acked=false
+client: sequence 6; wait_confirms (a nack since the last) = false unconfirmed=0
+client: wait_confirms again = true
+client: sequence 99: amqp: no message was published with sequence number 99
+client: returned 312 NO_ROUTE key=unroutable body=lost
+client: another return: false
+client: sequence 9: amqp: timed out waiting for the broker's confirm
+client: closed=true why=amqp: a message of 1000000000 bytes, over Options.max_body (134217728)
+client: publish after: amqp: a message of 1000000000 bytes, over Options.max_body (134217728)
+server: start-ok PLAIN app:s3cr@t product=slang amqp
+server: tune-ok channel_max=2047 frame_max=4096 heartbeat=60
+server: open vhost=/
+server: message 1 exchange=invoices key=jobs mandatory=0 body=10000 bytes in 3 frames type=application/octet-stream mode=2 prio=5 corr=c-1 reply_to=replies exp=60000 id=m-1 ts=1700000000 kind=invoice app=billing headers=attempt=3;tenant=acme;
+server: message 1 exchange= key=jobs mandatory=0 body=1 bytes in 1 frames type= mode=0 prio=-1 corr= reply_to= exp= id= ts=-1 kind= app= headers=
+server: message 2 exchange= key=bad mandatory=0 body=1 bytes in 1 frames type= mode=0 prio=-1 corr= reply_to= exp= id= ts=-1 kind= app= headers=
+server: message 3 exchange= key=batch mandatory=0 body=1 bytes in 1 frames type= mode=0 prio=-1 corr= reply_to= exp= id= ts=-1 kind= app= headers=
+server: message 4 exchange= key=batch mandatory=0 body=1 bytes in 1 frames type= mode=0 prio=-1 corr= reply_to= exp= id= ts=-1 kind= app= headers=
+server: message 5 exchange= key=batch mandatory=0 body=1 bytes in 1 frames type= mode=0 prio=-1 corr= reply_to= exp= id= ts=-1 kind= app= headers=
+server: message 6 exchange= key=batch-end mandatory=0 body=3 bytes in 1 frames type= mode=0 prio=-1 corr= reply_to= exp= id= ts=-1 kind= app= headers=
+server: acked 4 messages at once
+server: message 7 exchange= key=jobs mandatory=0 body=5 bytes in 1 frames type= mode=0 prio=-1 corr= reply_to= exp= id= ts=-1 kind= app= headers=
+server: message 8 exchange= key=unroutable mandatory=1 body=4 bytes in 1 frames type= mode=0 prio=-1 corr= reply_to= exp= id= ts=-1 kind= app= headers=
+server: message 9 exchange= key=never mandatory=0 body=1 bytes in 1 frames type= mode=0 prio=-1 corr= reply_to= exp= id= ts=-1 kind= app= headers=
+server: message 10 exchange= key=huge mandatory=0 body=1 bytes in 1 frames type= mode=0 prio=-1 corr= reply_to= exp= id= ts=-1 kind= app= headers=
+server: client sent 10.50 505

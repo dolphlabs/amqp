@@ -15,6 +15,7 @@
 // closes its channel too, as its late reply would be taken for the next
 // call's.
 
+import "builder";
 import "strings";
 
 let CH_OPEN = 1;
@@ -34,6 +35,27 @@ pub gc struct Channel {
     // we sent channel.close and the broker has not answered: the number
     // stays taken, and every frame for it but close/close-ok is dropped
     closing: bool,
+    // publishing: plock orders sequence numbers with writes; clock2
+    // guards the confirm state below
+    plock: mutex,
+    clock2: mutex,
+    confirming: bool,
+    next_seq: int,
+    unconfirmed: map[int]bool,
+    nacked: map[int]bool,
+    nack_seen: bool,
+    confirm_waiters: [chan[bool]],
+    returns: chan[Return],
+    returns_dropped: int,
+    // a message arriving: its method (in_kind 1 return, 2 deliver, 3
+    // get-ok), then its header, then body frames up to in_size
+    in_kind: int,
+    in_method: Method,
+    in_header: bool,
+    in_props: Properties,
+    in_size: int,
+    in_body: builder.Bytes,
+    in_got: int,
 }
 
 pub gc struct Queue {
@@ -104,7 +126,11 @@ pub fn channel(c: Conn, deadline: until) -> result[Channel, str] {
         return err("amqp: all " + to_str(c.channel_max) + " channels are open");
     }
     let ch = Channel { conn: c, id: id, state: CH_OPEN, why: "", rpc: make_mutex(), replies: make_chan(4),
-                       active: true, closing: false };
+                       active: true, closing: false, plock: make_mutex(), clock2: make_mutex(), confirming: false,
+                       next_seq: 1, unconfirmed: {}, nacked: {}, nack_seen: false, confirm_waiters: [],
+                       returns: make_chan(RETURN_BUFFER), returns_dropped: 0, in_kind: 0,
+                       in_method: method(0, 0, []), in_header: false, in_props: properties(), in_size: 0,
+                       in_body: builder.new_bytes(), in_got: 0 };
     c.chans[id] = ch;
     mutex_unlock(c.clock);
     let r = call(ch, method(20, 10, [arg_str("")]), 20, 11, deadline);
@@ -155,6 +181,8 @@ fn end_channel(ch: Channel, why: str) {
         forget_channel(ch);
     }
     chan_close(ch.replies);
+    chan_close(ch.returns);
+    wake_confirm_waiters(ch);
 }
 
 // Frees the channel's number.
@@ -265,16 +293,115 @@ fn channel_frame(c: Conn, f: Frame) -> result[bool, str] {
         }
         return ok(true);
     }
-    if f.kind != 1 {
-        c.fail_code = 505;
-        return err("amqp: a content frame on channel " + to_str(f.channel) + " without a method before it");
+    if f.kind == 2 {
+        return content_header(ch, f.payload);
+    }
+    if f.kind == 3 {
+        return content_body(ch, f.payload);
     }
     let mr = decode_method(f.payload);
     guard let m = mr else let e = err_of(mr) {
         c.fail_code = 502;
         return err(e);
     }
+    if ch.in_kind != 0 {
+        c.fail_code = 505;
+        return err("amqp: method " + to_str(m.class_id) + "." + to_str(m.method_id) + " in the middle of a message on channel " +
+                   to_str(ch.id));
+    }
+    let k = m.class_id * 1000 + m.method_id;
+    if k == 60050 || k == 60060 || k == 60071 {
+        ch.in_kind = 1;
+        if k == 60060 {
+            ch.in_kind = 2;
+        } else if k == 60071 {
+            ch.in_kind = 3;
+        }
+        ch.in_method = m;
+        ch.in_header = false;
+        ch.in_got = 0;
+        return ok(true);
+    }
+    if k == 60080 {
+        return apply_confirm(ch, m.args[0].i, m.args[1].i != 0, true);
+    }
+    if k == 60120 {
+        return apply_confirm(ch, m.args[0].i, m.args[1].i != 0, false);
+    }
     return channel_method(ch, m);
+}
+
+// ---- messages from the broker ------------------------------------------------
+
+fn content_header(ch: Channel, payload: bytes) -> result[bool, str] {
+    let c = ch.conn;
+    if ch.in_kind == 0 || ch.in_header {
+        c.fail_code = 505;
+        return err("amqp: a content header on channel " + to_str(ch.id) + " without a message method before it");
+    }
+    let hr = decode_header(payload);
+    guard let h = hr else let e = err_of(hr) {
+        c.fail_code = 502;
+        return err(e);
+    }
+    if h.class_id != 60 {
+        c.fail_code = 505;
+        return err("amqp: a content header of class " + to_str(h.class_id) + " for a basic message");
+    }
+    if h.body_size > c.opts.max_body {
+        c.fail_code = 505;
+        return err("amqp: a message of " + to_str(h.body_size) + " bytes, over Options.max_body (" +
+                   to_str(c.opts.max_body) + ")");
+    }
+    ch.in_header = true;
+    ch.in_props = h.props;
+    ch.in_size = h.body_size;
+    ch.in_body = builder.new_bytes();
+    ch.in_got = 0;
+    if h.body_size == 0 {
+        return message_done(ch);
+    }
+    return ok(true);
+}
+
+fn content_body(ch: Channel, payload: bytes) -> result[bool, str] {
+    let c = ch.conn;
+    if ch.in_kind == 0 || !ch.in_header {
+        c.fail_code = 505;
+        return err("amqp: a body frame on channel " + to_str(ch.id) + " without a content header before it");
+    }
+    ch.in_got += len(payload);
+    if ch.in_got > ch.in_size {
+        c.fail_code = 505;
+        return err("amqp: body frames longer than the " + to_str(ch.in_size) + " bytes their header declared");
+    }
+    ch.in_body.write(payload);
+    if ch.in_got == ch.in_size {
+        return message_done(ch);
+    }
+    return ok(true);
+}
+
+// A whole message has arrived: hand it to whoever waits for its kind.
+fn message_done(ch: Channel) -> result[bool, str] {
+    let kind = ch.in_kind;
+    let m = ch.in_method;
+    let body = ch.in_body.finish();
+    ch.in_kind = 0;
+    ch.in_header = false;
+    if kind == 1 {
+        let r = Return { reply_code: m.args[0].i, reply_text: m.args[1].s, exchange: m.args[2].s, routing_key: m.args[3].s,
+                         props: ch.in_props, body: body };
+        select {
+            case chan_send(ch.returns, r) { }
+            default {
+                ch.returns_dropped += 1;
+            }
+        }
+        return ok(true);
+    }
+    ch.conn.fail_code = 505;
+    return err("amqp: a delivery on channel " + to_str(ch.id) + ", which has no consumer");
 }
 
 fn channel_method(ch: Channel, m: Method) -> result[bool, str] {
